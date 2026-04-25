@@ -154,7 +154,7 @@ button:focus-visible {
 
 .button-row {
   display: grid;
-  grid-template-columns: repeat(2, 44px);
+  grid-template-columns: repeat(4, 44px);
   gap: 8px;
 }
 
@@ -359,7 +359,7 @@ button.is-active {
   }
 
   .button-row {
-    grid-template-columns: repeat(2, minmax(44px, 1fr));
+    grid-template-columns: repeat(4, minmax(44px, 1fr));
   }
 
   .metric-readout {

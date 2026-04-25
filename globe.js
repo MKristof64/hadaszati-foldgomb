@@ -36,6 +36,8 @@ const analysisTitle = document.getElementById("globe-analysis-title");
 const analysisText = document.getElementById("globe-analysis-text");
 const resetButton = document.getElementById("reset-view");
 const spinButton = document.getElementById("toggle-spin");
+const zoomInButton = document.getElementById("zoom-in");
+const zoomOutButton = document.getElementById("zoom-out");
 
 const countriesByIso = new Map(DATA.countries.map((country) => [country.iso3, country]));
 const countriesByName = new Map(DATA.countries.map((country) => [country.name.toLocaleLowerCase("hu"), country]));
@@ -58,6 +60,8 @@ let mapHeight = 2048;
 let globeBuffer = document.createElement("canvas");
 let globeBufferCtx = globeBuffer.getContext("2d");
 let dragStart = null;
+let pinchStart = null;
+const activePointers = new Map();
 let lastFrame = performance.now();
 
 function clamp(value, min, max) {
@@ -638,14 +642,20 @@ function setGlobeZoom(nextZoom) {
   }
 }
 
-function pickMarker(x, y) {
+function countryAtScreenPoint(x, y) {
+  const lonLat = screenToLonLat(x, y);
+  if (!lonLat) return null;
+  return hitCountryAtLonLat(lonLat.lon, lonLat.lat);
+}
+
+function pickMarker(x, y, radiusPx = 6.8 * dpr) {
   let picked = null;
   let bestDistance = Infinity;
   markerCountries().forEach((country) => {
     const p = project(country.latlng[1], country.latlng[0]);
     if (p.z <= 0) return;
     const distance = Math.hypot(x - p.x, y - p.y);
-    if (distance < 6.8 * dpr && distance < bestDistance) {
+    if (distance < radiusPx && distance < bestDistance) {
       bestDistance = distance;
       picked = country;
     }
@@ -653,14 +663,58 @@ function pickMarker(x, y) {
   return picked;
 }
 
-function pickCountry(x, y) {
-  const lonLat = screenToLonLat(x, y);
-  if (!lonLat) return null;
+function addCountryScore(scores, country, distance, weight) {
+  if (!country) return;
+  const current = scores.get(country.iso3) || { country, score: 0, count: 0, minDistance: Infinity };
+  current.score += weight;
+  current.count += 1;
+  current.minDistance = Math.min(current.minDistance, distance);
+  scores.set(country.iso3, current);
+}
 
-  const polygonCountry = hitCountryAtLonLat(lonLat.lon, lonLat.lat);
-  if (polygonCountry) return polygonCountry;
+function pickCountryFromNeighborhood(x, y, radiusPx) {
+  const directCountry = countryAtScreenPoint(x, y);
+  if (directCountry) return directCountry;
 
-  return pickMarker(x, y);
+  const scores = new Map();
+
+  const rings = [
+    { radius: radiusPx * 0.34, points: 8, weight: 1.35 },
+    { radius: radiusPx * 0.66, points: 12, weight: 0.9 },
+    { radius: radiusPx, points: 16, weight: 0.55 },
+  ];
+
+  rings.forEach((ring) => {
+    for (let index = 0; index < ring.points; index += 1) {
+      const angle = (Math.PI * 2 * index) / ring.points;
+      const sampleX = x + Math.cos(angle) * ring.radius;
+      const sampleY = y + Math.sin(angle) * ring.radius;
+      const position = { x: sampleX, y: sampleY };
+      if (!isOnGlobe(position)) continue;
+      addCountryScore(scores, countryAtScreenPoint(sampleX, sampleY), ring.radius, ring.weight);
+    }
+  });
+
+  if (!scores.size) return null;
+
+  const best = [...scores.values()].sort(
+    (a, b) => b.score - a.score || b.count - a.count || a.minDistance - b.minDistance,
+  )[0];
+
+  if (best.score >= 1.15 || best.count >= 3 || best.minDistance <= radiusPx * 0.42) return best.country;
+  return null;
+}
+
+function pickCountry(x, y, options = {}) {
+  if (!screenToLonLat(x, y)) return null;
+
+  const touchMode = options.pointerType === "touch";
+  const pickRadius = (options.radiusCss ?? (touchMode ? 18 : 7)) * dpr;
+  const markerRadius = (touchMode ? 14 : 7) * dpr;
+  const markerCountry = pickMarker(x, y, markerRadius);
+  const polygonCountry = pickCountryFromNeighborhood(x, y, pickRadius);
+
+  return polygonCountry || markerCountry;
 }
 
 function pointerPosition(event) {
@@ -683,29 +737,114 @@ function setCanvasCursor(position) {
   canvas.style.cursor = isOnGlobe(position, 6) ? "grab" : "default";
 }
 
+function preventTouchDefault(event) {
+  if (event.pointerType === "touch" && event.cancelable) event.preventDefault();
+}
+
+function pointerDistance(a, b) {
+  return Math.hypot(a.x - b.x, a.y - b.y);
+}
+
+function firstTwoActivePointers() {
+  const pointers = [...activePointers.values()];
+  return [pointers[0], pointers[1]];
+}
+
+function startPinchGesture() {
+  const [first, second] = firstTwoActivePointers();
+  if (!first || !second) return;
+
+  pinchStart = {
+    distance: Math.max(pointerDistance(first, second), 1),
+    zoom: state.zoom,
+  };
+  dragStart = null;
+  state.dragging = true;
+  state.moved = true;
+}
+
+function updatePinchGesture() {
+  if (!pinchStart || activePointers.size < 2) return;
+
+  const [first, second] = firstTwoActivePointers();
+  const distance = Math.max(pointerDistance(first, second), 1);
+  setGlobeZoom(pinchStart.zoom * (distance / pinchStart.distance));
+}
+
+function releasePointerCapture(event) {
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+}
+
+function continueSinglePointerAfterPinch() {
+  const remaining = [...activePointers.values()][0];
+  if (!remaining) return false;
+
+  dragStart = {
+    ...remaining,
+    lon: state.centerLon,
+    lat: state.centerLat,
+  };
+  pinchStart = null;
+  state.dragging = true;
+  state.moved = true;
+  return true;
+}
+
 canvas.addEventListener("pointerdown", (event) => {
   const position = pointerPosition(event);
+  const pointer = {
+    ...position,
+    pointerType: event.pointerType || "mouse",
+  };
   if (!isOnGlobe(position, 6)) {
-    dragStart = null;
-    state.dragging = false;
-    state.moved = false;
+    if (!activePointers.size) {
+      dragStart = null;
+      pinchStart = null;
+      state.dragging = false;
+      state.moved = false;
+    }
+    setCanvasCursor(position);
+    return;
+  }
+
+  preventTouchDefault(event);
+  activePointers.set(event.pointerId, pointer);
+  canvas.setPointerCapture(event.pointerId);
+
+  if (activePointers.size >= 2) {
+    startPinchGesture();
     setCanvasCursor(position);
     return;
   }
 
   dragStart = {
-    ...position,
+    ...pointer,
     lon: state.centerLon,
     lat: state.centerLat,
   };
+  pinchStart = null;
   state.dragging = true;
   state.moved = false;
   setCanvasCursor(position);
-  canvas.setPointerCapture(event.pointerId);
 });
 
 canvas.addEventListener("pointermove", (event) => {
   const position = pointerPosition(event);
+  const activePointer = activePointers.get(event.pointerId);
+  if (activePointer) {
+    activePointers.set(event.pointerId, {
+      ...activePointer,
+      ...position,
+    });
+  }
+
+  if (activePointers.size >= 2) {
+    preventTouchDefault(event);
+    updatePinchGesture();
+    setCanvasCursor(position);
+    return;
+  }
+
   if (!state.dragging || !dragStart) {
     setCanvasCursor(position);
     return;
@@ -713,7 +852,12 @@ canvas.addEventListener("pointermove", (event) => {
 
   const dx = position.x - dragStart.x;
   const dy = position.y - dragStart.y;
-  if (Math.hypot(dx, dy) > 4 * dpr) state.moved = true;
+  const moveThreshold = (dragStart.pointerType === "touch" ? 10 : 4) * dpr;
+  if (Math.hypot(dx, dy) <= moveThreshold) {
+    setCanvasCursor(position);
+    return;
+  }
+  state.moved = true;
 
   state.centerLon = normalizeLon(dragStart.lon - (dx / globe.r) * 76);
   state.centerLat = clamp(dragStart.lat + (dy / globe.r) * 76, -72, 72);
@@ -722,21 +866,49 @@ canvas.addEventListener("pointermove", (event) => {
 
 canvas.addEventListener("pointerup", (event) => {
   const position = pointerPosition(event);
+  const activePointer = activePointers.get(event.pointerId);
+  const pointerType = activePointer?.pointerType || event.pointerType || "mouse";
+  const pointerWasActive = Boolean(activePointer);
+  const pinchWasActive = activePointers.size >= 2 || Boolean(pinchStart);
   const wasDragging = state.dragging;
-  state.dragging = false;
-  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+  activePointers.delete(event.pointerId);
+  releasePointerCapture(event);
 
-  if (wasDragging && !state.moved && isOnGlobe(position, 6)) {
-    const country = pickCountry(position.x, position.y);
+  if (activePointers.size >= 2) {
+    startPinchGesture();
+    setCanvasCursor(position);
+    return;
+  }
+
+  if (activePointers.size === 1) {
+    continueSinglePointerAfterPinch();
+    setCanvasCursor(position);
+    return;
+  }
+
+  state.dragging = false;
+
+  if (pointerWasActive && wasDragging && !state.moved && !pinchWasActive && isOnGlobe(position, 6)) {
+    const country = pickCountry(position.x, position.y, { pointerType });
     if (country) selectCountry(country.iso3);
   }
   dragStart = null;
+  pinchStart = null;
   setCanvasCursor(position);
 });
 
 canvas.addEventListener("pointercancel", (event) => {
-  state.dragging = false;
-  dragStart = null;
+  activePointers.delete(event.pointerId);
+  releasePointerCapture(event);
+  if (activePointers.size >= 2) {
+    startPinchGesture();
+  } else if (activePointers.size === 1) {
+    continueSinglePointerAfterPinch();
+  } else {
+    state.dragging = false;
+    dragStart = null;
+    pinchStart = null;
+  }
   const position = pointerPosition(event);
   setCanvasCursor(position);
 });
@@ -788,6 +960,14 @@ countrySearch.addEventListener("keydown", (event) => {
   if (event.key === "Enter") selectCountryBySearch(event.currentTarget.value);
 });
 
+zoomInButton.addEventListener("click", () => {
+  setGlobeZoom(state.zoom * 1.18);
+});
+
+zoomOutButton.addEventListener("click", () => {
+  setGlobeZoom(state.zoom / 1.18);
+});
+
 resetButton.addEventListener("click", () => {
   state.centerLon = 18;
   state.centerLat = 16;
@@ -811,6 +991,8 @@ window.__globeDebug = {
   getGlobe: () => globe,
   selectCountry,
   pickCountry,
+  pickCountryFromNeighborhood,
+  pickMarker,
   countriesByIso,
 };
 
