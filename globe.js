@@ -671,8 +671,28 @@ function pointerPosition(event) {
   };
 }
 
+function isOnGlobe(position, edgePadding = 0) {
+  return Math.hypot(position.x - globe.x, position.y - globe.y) <= globe.r + edgePadding * dpr;
+}
+
+function setCanvasCursor(position) {
+  if (state.dragging) {
+    canvas.style.cursor = "grabbing";
+    return;
+  }
+  canvas.style.cursor = isOnGlobe(position, 6) ? "grab" : "default";
+}
+
 canvas.addEventListener("pointerdown", (event) => {
   const position = pointerPosition(event);
+  if (!isOnGlobe(position, 6)) {
+    dragStart = null;
+    state.dragging = false;
+    state.moved = false;
+    setCanvasCursor(position);
+    return;
+  }
+
   dragStart = {
     ...position,
     lon: state.centerLon,
@@ -680,13 +700,17 @@ canvas.addEventListener("pointerdown", (event) => {
   };
   state.dragging = true;
   state.moved = false;
+  setCanvasCursor(position);
   canvas.setPointerCapture(event.pointerId);
 });
 
 canvas.addEventListener("pointermove", (event) => {
-  if (!state.dragging || !dragStart) return;
-
   const position = pointerPosition(event);
+  if (!state.dragging || !dragStart) {
+    setCanvasCursor(position);
+    return;
+  }
+
   const dx = position.x - dragStart.x;
   const dy = position.y - dragStart.y;
   if (Math.hypot(dx, dy) > 4 * dpr) state.moved = true;
@@ -698,22 +722,31 @@ canvas.addEventListener("pointermove", (event) => {
 
 canvas.addEventListener("pointerup", (event) => {
   const position = pointerPosition(event);
+  const wasDragging = state.dragging;
   state.dragging = false;
-  canvas.releasePointerCapture(event.pointerId);
+  if (canvas.hasPointerCapture(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
 
-  if (!state.moved) {
+  if (wasDragging && !state.moved && isOnGlobe(position, 6)) {
     const country = pickCountry(position.x, position.y);
     if (country) selectCountry(country.iso3);
   }
+  dragStart = null;
+  setCanvasCursor(position);
 });
 
-canvas.addEventListener("pointercancel", () => {
+canvas.addEventListener("pointercancel", (event) => {
   state.dragging = false;
+  dragStart = null;
+  const position = pointerPosition(event);
+  setCanvasCursor(position);
 });
 
 canvas.addEventListener(
   "wheel",
   (event) => {
+    const position = pointerPosition(event);
+    if (!isOnGlobe(position, 6)) return;
+
     event.preventDefault();
     setGlobeZoom(state.zoom * Math.exp(-event.deltaY * 0.0012));
   },
