@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="hu">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Forgatható hadászati földgömb</title>
+    <link rel="stylesheet" href="globe.css">
+    <script defer src="data.js"></script>
+    <script defer src="globe_geo.js"></script>
+    <script defer src="globe.js"></script>
+  </head>
+  <body>
+    <main class="globe-page">
+      <section class="globe-hero" aria-label="Interaktív földgömb">
+        <canvas id="globe-canvas"></canvas>
+
+        <header class="hero-copy">
+          <p class="eyebrow">2024-es hadászati adatnézet</p>
+          <h1>Forgatható világmodell</h1>
+        </header>
+
+        <div class="control-bar" aria-label="Földgömb vezérlés">
+          <label for="globe-metric">Paraméter</label>
+          <select id="globe-metric">
+            <option value="military">Katonai kiadások</option>
+            <option value="defense">Védelmi kiadások</option>
+            <option value="perCapita">1 főre jutó katonai kiadások</option>
+            <option value="threat">Fenyegetettségi szint</option>
+          </select>
+          <div class="button-row">
+            <button id="reset-view" type="button" title="Nézet visszaállítása" aria-label="Nézet visszaállítása">
+              ↺
+            </button>
+            <button id="toggle-spin" type="button" title="Automatikus forgás" aria-label="Automatikus forgás">
+              ◐
+            </button>
+          </div>
+        </div>
+
+        <aside class="country-panel" aria-live="polite">
+          <p class="eyebrow">Kiválasztott ország</p>
+          <h2 id="globe-country-title">Magyarország</h2>
+          <label class="search-label" for="globe-search">Ország keresése</label>
+          <input id="globe-search" type="search" placeholder="pl. Dánia, Ukrajna, Katar">
+          <dl id="globe-details" class="details-list"></dl>
+        </aside>
+
+        <div class="metric-readout">
+          <p class="eyebrow">Kiválasztott paraméter</p>
+          <h2 id="globe-metric-title">Katonai kiadások</h2>
+          <div id="globe-legend" class="legend"></div>
+        </div>
+      </section>
+
+      <section class="analysis-block" aria-labelledby="globe-analysis-title">
+        <p class="eyebrow">Fenyegetettséget indokló elemzés</p>
+        <h2 id="globe-analysis-title">Magyarország</h2>
+        <p id="globe-analysis-text"></p>
+      </section>
+    </main>
+  </body>
+</html>
